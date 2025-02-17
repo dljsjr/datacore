@@ -21,6 +21,7 @@ declare module "obsidian" {
     }
     interface App {
         appId?: string;
+        functions: Record<string, typeof Function>;
         plugins: {
             enabledPlugins: Set<string>;
             plugins: {
