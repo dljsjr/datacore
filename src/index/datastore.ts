@@ -10,7 +10,15 @@ import { extractSubtags, normalizeHeaderForLink } from "utils/normalizers";
 import FlatQueue from "flatqueue";
 import { BTreeFieldIndex, EverythingFieldIndex, FieldIndex, IdFieldIndex, SetFieldIndex } from "index/storage/fields";
 import { FIELDBEARING_TYPE, Field, Fieldbearing } from "expression/field";
-import { IndexResolver, execute, optimizeQuery } from "index/storage/query-executor";
+import {
+    IndexResolver,
+    execute,
+    optimizeQuery,
+    scan,
+    scanAccept,
+    scanComplete,
+    scanContinue,
+} from "index/storage/query-executor";
 import { Result } from "api/result";
 import { Evaluator } from "expression/evaluator";
 import { Settings } from "settings";
@@ -365,6 +373,36 @@ export class Datastore {
         });
     }
 
+    /** Perform a pass on a filter to return the first `limit` results */
+    private _take<T>(
+        candidates: Filter<T>,
+        limit: number,
+        everything?: Set<T>,
+        resolver?: IndexResolver<T>,
+        evaluator?: Evaluator
+    ): Result<Set<T>, string> {
+        var count = 0;
+        return scan(
+            Filters.resolve(candidates, everything ?? resolver?.universe ?? (this.ids as Set<T>)),
+            (candidate) => {
+                if (count >= limit) {
+                    return scanComplete();
+                }
+                const exists =
+                    this.objects.has(`${candidate}`) ??
+                    evaluator?.functions["exists"](evaluator, `${candidate}`) ??
+                    resolver?.load(candidate);
+
+                if (!exists) {
+                    return scanContinue();
+                }
+
+                count++;
+                return scanAccept(candidate);
+            }
+        );
+    }
+
     /** Internal search which yields a filter of results. */
     private _search(query: IndexQuery, settings?: SearchSettings): Result<Filter<string>, string> {
         const sourcePath = settings?.sourcePath;
@@ -397,7 +435,7 @@ export class Datastore {
 
     private _resolveSource(query: IndexSource, settings?: SearchSettings): Result<Filter<string>, string> {
         switch (query.type) {
-            case "child-of":
+            case "child-of": {
                 // TODO: Consider converting this to be a scan instead for a noticable speedup.
                 const maybeParents = this._search(query.parents, settings);
                 if (!maybeParents.successful) return maybeParents.cast();
@@ -427,7 +465,8 @@ export class Datastore {
                 }
 
                 return Result.success(Filters.atom(childResults));
-            case "parent-of":
+            }
+            case "parent-of": {
                 // TODO: Consider converting this to be a scan instead for a noticable speedup.
                 const maybeChildren = this._search(query.children, settings);
                 if (!maybeChildren.successful) return maybeChildren.cast();
@@ -451,7 +490,8 @@ export class Datastore {
                 }
 
                 return Result.success(Filters.atom(parentResults));
-            case "linked":
+            }
+            case "linked": {
                 if (query.distance && query.distance < 0) return Result.success(Filters.NOTHING);
 
                 // Compute the source objects first.
@@ -474,7 +514,8 @@ export class Datastore {
                 if (!query.inclusive)
                     return Result.success(Filters.atom(Filters.setIntersectNegation(results, resolvedSources)));
                 else return Result.success(Filters.atom(results));
-            case "sorted":
+            }
+            case "transform-sorted": {
                 const maybeInner = this._search(query.source, settings);
                 if (!maybeInner.successful) return maybeInner.cast();
                 const innerQuery = maybeInner.value;
@@ -491,6 +532,19 @@ export class Datastore {
                         )
                     )
                 );
+            }
+            case "transform-head":
+                const maybeInner = this._search(query.source, settings);
+                if (!maybeInner.successful) return maybeInner.cast();
+                const innerQuery = maybeInner.value;
+
+                if (Filters.empty(innerQuery)) return Result.success(Filters.NOTHING);
+
+                const result = this._take(innerQuery, query.limit, this.ids);
+
+                if (!result.successful) return result.cast();
+
+                return Result.success(Filters.atom(result.value));
             default:
                 return Result.success(this._resolvePrimitive(query, settings));
         }
@@ -547,7 +601,7 @@ export class Datastore {
                 const fieldIndex = this.fields.get(normkey);
                 if (fieldIndex == null) return Filters.NOTHING;
 
-                return Filters.atom(fieldIndex.all());
+                return Filters.atom(fieldIndex.allDefined() ?? fieldIndex.all());
             case "equal-value":
                 return Filters.lazyUnion(query.values, (value) =>
                     this._filterFields(
@@ -600,14 +654,29 @@ export class Datastore {
         const sorted = new BTree([], (left, right) =>
             order === "asc" ? Literals.compare(left, right) : Literals.compare(right, left)
         );
+
         for (const objectId of index.all()) {
             const object = this.objects.get(objectId);
-            if (!object || !object.$types.contains(FIELDBEARING_TYPE)) continue;
+            if (!object) continue;
 
-            const field = (object as any as Fieldbearing).field(normkey);
-            if (!field) continue;
+            if (object.$types.contains(FIELDBEARING_TYPE)) {
+                const field = (object as any as Fieldbearing).field(normkey);
+                if (field) {
+                    sorted.set(field.value, objectId);
+                    continue;
+                }
+            }
 
-            sorted.set(field.value, objectId);
+            if ((object as any).value && typeof (object as any).value === "function") {
+                const maybeValue = (object as any).value(normkey);
+                if (maybeValue) {
+                    sorted.set(maybeValue, objectId);
+                }
+            }
+
+            if (object.hasOwnProperty(normkey)) {
+                sorted.set((object as any)[normkey], objectId);
+            }
         }
 
         return Filters.atom(new Set([...sorted.values()]));

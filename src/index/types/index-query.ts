@@ -133,11 +133,24 @@ export interface IndexLinked {
     inclusive?: boolean;
 }
 
-export interface IndexSorted {
-    type: "sorted";
+/**
+ * Query Transformer that sorts the index by the value of a key
+ */
+export interface TransformIndexSorted {
+    type: "transform-sorted";
     source: IndexQuery;
     order: "asc" | "desc";
     key?: string;
+}
+
+/**
+ * Take the first `count` elements returned by a query. Does not drop
+ * anything if the query size is less than `count`
+ */
+export interface TransformIndexHead {
+    type: "transform-head";
+    source: IndexQuery;
+    limit: number;
 }
 
 /** Primary index sources which just directly produce sets of matches. */
@@ -152,7 +165,7 @@ export type IndexPrimitive =
     | IndexValueEquals;
 
 /** Secondary index sources which take in another index source, modify it somehow, and return a new set of matches. */
-export type IndexIntermediate = IndexChildOf | IndexParentOf | IndexLinked | IndexSorted;
+export type IndexIntermediate = IndexChildOf | IndexParentOf | IndexLinked | TransformIndexSorted | TransformIndexHead;
 
 ///////////////////////
 // Index Combinators //

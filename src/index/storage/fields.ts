@@ -14,6 +14,9 @@ export interface FieldIndex {
     /** Return a set of all pages in the collection. */
     all(): Set<string>;
 
+    /** For indices with fast value look-up, filters out pages where the field value isn't set. */
+    allDefined(): Set<string> | undefined;
+
     /** For indices with fast value look-up, returns the pages sorted ascending on the field's value */
     ascending(): Set<string> | undefined;
 
@@ -42,6 +45,10 @@ export class EverythingFieldIndex implements FieldIndex {
     public descending(): Set<string> | undefined {
         return undefined;
     }
+
+    public allDefined(): Set<string> | undefined {
+        return undefined;
+    }
 }
 
 /** Specialized field index for IDs which knows to directly just return the ID. */
@@ -67,6 +74,10 @@ export class IdFieldIndex implements FieldIndex {
 
     public descending(): Set<string> {
         return new Set(Array.from(this.all()).sort((left, right) => Literals.compare(right, left)));
+    }
+
+    public allDefined(): Set<string> | undefined {
+        return this.all();
     }
 }
 
@@ -104,6 +115,10 @@ export class SetFieldIndex implements FieldIndex {
     }
 
     public descending(): Set<string> | undefined {
+        return undefined;
+    }
+
+    public allDefined(): Set<string> | undefined {
         return undefined;
     }
 }
@@ -162,6 +177,15 @@ export class BTreeFieldIndex implements FieldIndex {
         var entriesIter = this.values.entriesReversed(undefined, this.reusableSortArray);
         const sortedValuesIter = BTreeFieldIndex.treeValuesIter(entriesIter);
         return new Set([...sortedValuesIter].flatMap((set) => [...set]));
+    }
+
+    public allDefined(): Set<string> | undefined {
+        return new Set(
+            this.values
+                .filter((key) => key !== undefined)
+                .valuesArray()
+                .flatMap((set) => [...set])
+        );
     }
 
     private static treeValuesIter(entries: IterableIterator<[Literal, Set<string>]>): IterableIterator<Set<string>> {

@@ -43,6 +43,8 @@ function denest(query: IndexQuery): IndexQuery {
         case "parent-of":
             return Object.assign({}, query, { children: denest(query.children) });
         case "linked":
+        case "transform-head":
+        case "transform-sorted":
             return Object.assign({}, query, { source: denest(query.source) });
         default:
             return query;
@@ -52,7 +54,7 @@ function denest(query: IndexQuery): IndexQuery {
 /** Perform constant folding by eliminating dead 'true' and 'false' terms. */
 function constantfold(query: IndexQuery): IndexQuery {
     switch (query.type) {
-        case "and":
+        case "and": {
             const achildren = [] as IndexQuery[];
             for (const child of query.elements) {
                 const folded = constantfold(child);
@@ -67,7 +69,8 @@ function constantfold(query: IndexQuery): IndexQuery {
             }
 
             return { type: "and", elements: achildren };
-        case "or":
+        }
+        case "or": {
             const ochildren = [] as IndexQuery[];
             for (const child of query.elements) {
                 const folded = constantfold(child);
@@ -82,7 +85,8 @@ function constantfold(query: IndexQuery): IndexQuery {
             }
 
             return { type: "or", elements: ochildren };
-        case "not":
+        }
+        case "not": {
             const folded = constantfold(query.element);
 
             if (folded.type === "constant") {
@@ -90,7 +94,8 @@ function constantfold(query: IndexQuery): IndexQuery {
             }
 
             return { type: "not", element: folded };
-        case "child-of":
+        }
+        case "child-of": {
             // parents = EMPTY means this will also be empty.
             const parents = constantfold(query.parents);
             if (parents.type === "constant") {
@@ -99,7 +104,8 @@ function constantfold(query: IndexQuery): IndexQuery {
             }
 
             return Object.assign({}, query, { parents });
-        case "parent-of":
+        }
+        case "parent-of": {
             // children = EMPTY means this will also be empty.
             const children = constantfold(query.children);
             if (children.type === "constant") {
@@ -108,7 +114,8 @@ function constantfold(query: IndexQuery): IndexQuery {
             }
 
             return Object.assign({}, query, { children });
-        case "linked":
+        }
+        case "linked": {
             const source = constantfold(query.source);
             if (source.type === "constant") {
                 if (!source.constant) return { type: "constant", constant: false };
@@ -116,6 +123,16 @@ function constantfold(query: IndexQuery): IndexQuery {
             }
 
             return Object.assign({}, query, { source });
+        }
+        case "transform-head":
+        case "transform-sorted": {
+            const source = constantfold(query.source);
+            if (source.type === "constant") {
+                return { type: "constant", constant: source.constant };
+            }
+
+            return Object.assign({}, query, { source });
+        }
         default:
             return query;
     }
@@ -243,6 +260,60 @@ export function collapse<T>(
     }
 }
 
+export type ScanResult<T, E> = ScanAcceptResult<T> | ScanContinueResult | ScanCompleteResult | ScanErrorResult<E>;
+
+export interface ScanAcceptResult<T> {
+    type: "accept";
+    value: T;
+}
+export function scanAccept<T, E>(value: T): ScanResult<T, E> {
+    return { type: "accept", value };
+}
+
+export interface ScanContinueResult {
+    type: "continue";
+}
+
+export function scanContinue<T, E>(): ScanResult<T, E> {
+    return { type: "continue" };
+}
+
+export interface ScanCompleteResult {
+    type: "complete";
+}
+
+export function scanComplete<T, E>(): ScanResult<T, E> {
+    return { type: "complete" };
+}
+
+export interface ScanErrorResult<E> {
+    type: "error";
+    msg?: E;
+}
+
+export function scanError<T, E>(msg?: E): ScanResult<T, E> {
+    return { type: "error", msg };
+}
+
+export function scan<T>(candidates: Set<T>, scanner: (candidate: T) => ScanResult<T, string>): Result<Set<T>, string> {
+    const resultSet = new Set<T>();
+    for (const candidate of candidates) {
+        const scanResult = scanner(candidate);
+        switch (scanResult.type) {
+            case "continue":
+                continue;
+            case "complete":
+                return Result.success(resultSet);
+            case "accept":
+                resultSet.add(scanResult.value);
+                break;
+            case "error":
+                return Result.failure(`Failure during scan: ${scanResult.msg ?? "no error message provided"}`);
+        }
+    }
+    return Result.success(resultSet);
+}
+
 /** Scan over all candidate objects, returning objects for which the given expression resolves to true. */
 export function filterScan<T>(
     candidates: Set<T>,
@@ -250,20 +321,23 @@ export function filterScan<T>(
     evaluator: Evaluator,
     resolver: IndexResolver<T>
 ): Result<Set<T>, string> {
-    const result = new Set<T>();
-    for (const candidate of candidates) {
+    return scan(candidates, (candidate) => {
         const object = resolver.load(candidate);
-        if (!object) continue;
+        if (!object) {
+            return scanContinue();
+        }
 
         const value = evaluator.evaluate(expr, Variables.infer(object));
         if (!value.successful) {
-            return Result.failure(`Error while evaluating expression "${Expressions.toString(expr)}": ${value.error}`);
-        } else {
-            if (Literals.isTruthy(value.value)) result.add(candidate);
+            return scanError(`Error while evaluating expression "${Expressions.toString(expr)}": ${value.error}`);
         }
-    }
 
-    return Result.success(result);
+        if (Literals.isTruthy(value.value)) {
+            return scanAccept(candidate);
+        }
+
+        return scanContinue();
+    });
 }
 
 /** Filters an expression to find pages that have the variables for that expression.  */
