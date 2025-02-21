@@ -27,21 +27,27 @@ export function useIndexUpdates(datacore: Datacore, settings?: { debounce?: numb
     return revision;
 }
 
-export function useLastOpenedFiles(datacore: Datacore, settings?: { limit?: number; debounce?: number }): Indexable[] {
+export function useLastOpenedFiles(
+    datacore: Datacore,
+    settings?: { limit?: number; debounce?: number; filter?: (file: Indexable) => boolean }
+): Indexable[] {
     const limit = settings?.limit ?? 10;
     const indexRevision = useIndexUpdates(datacore, settings);
-    const query = useRef(QUERY.query.tryParse("@file AND exists($atime)"));
+    const query = useRef(QUERY.query.tryParse("sorted(@file AND exists($atime)) by $atime desc"));
 
     return useMemo(() => {
         return datacore.datastore
             .search(query.current)
             .map(
                 (result) =>
-                    (result.results.filter((file) => isFile(file) && file.$atime !== undefined) as unknown as File[])
-                        .sort((left, right) => {
-                            return right.$atime!.toMillis() - left.$atime!.toMillis();
-                        })
-                        .slice(0, limit !== 0 ? limit : undefined) as unknown as Indexable[]
+                    (
+                        result.results.filter(
+                            (file) =>
+                                isFile(file) &&
+                                file.$atime !== undefined &&
+                                (settings?.filter ? settings.filter(file) : true)
+                        ) as unknown as File[]
+                    ).slice(0, limit !== 0 ? limit : undefined) as unknown as Indexable[]
             )
             .orElse(
                 datacore.app.workspace

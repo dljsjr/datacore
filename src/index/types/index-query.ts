@@ -133,6 +133,13 @@ export interface IndexLinked {
     inclusive?: boolean;
 }
 
+export interface IndexSorted {
+    type: "sorted";
+    source: IndexQuery;
+    order: "asc" | "desc";
+    key?: string;
+}
+
 /** Primary index sources which just directly produce sets of matches. */
 export type IndexPrimitive =
     | IndexId
@@ -145,7 +152,7 @@ export type IndexPrimitive =
     | IndexValueEquals;
 
 /** Secondary index sources which take in another index source, modify it somehow, and return a new set of matches. */
-export type IndexIntermediate = IndexChildOf | IndexParentOf | IndexLinked;
+export type IndexIntermediate = IndexChildOf | IndexParentOf | IndexLinked | IndexSorted;
 
 ///////////////////////
 // Index Combinators //

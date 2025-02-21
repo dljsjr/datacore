@@ -24,6 +24,7 @@ import {
     IndexLinked,
     IndexField,
     IndexExpression,
+    IndexSorted,
 } from "index/types/index-query";
 import { normalizeDuration } from "utils/normalizers";
 import { Literal } from "expression/literal";
@@ -503,6 +504,7 @@ export interface QueryLanguage {
     queryChildOf: IndexChildOf;
     querySimpleLinked: IndexLinked;
     queryLinked: IndexLinked;
+    querySorted: IndexSorted;
     queryExists: IndexField;
     queryQuotedExpression: IndexExpression;
     queryRawExpression: IndexExpression;
@@ -559,6 +561,43 @@ export const QUERY = P.createLanguage<QueryLanguage>({
             direction:
                 func.toLowerCase() == "linksto" ? "incoming" : func.toLowerCase() == "linkedfrom" ? "outgoing" : "both",
         })),
+    querySorted: (q) =>
+        P.seqMap(
+            createFunction(P.regexp(/sorted/i).desc("sorted"), q.query),
+            chainOpt(
+                P.optWhitespace.map((): { keyMatch?: string; orderMatch?: "asc" | "desc" } => ({})),
+                (opts) =>
+                    P.regexp(/by\s+/i)
+                        .then(PRIMITIVES.identifier.or(PRIMITIVES.string))
+                        .atMost(1)
+                        .map((match) => ({ ...opts, keyMatch: match[0] })),
+                (opts) =>
+                    P.regexp(/(asc|desc)(?:end(?:ing)?)?/i, 1)
+                        .atMost(1)
+                        .map((match) => ({ ...opts, orderMatch: match[0] as "asc" | "desc" | undefined }))
+            ).atMost(2),
+            ([_func, source], opts) => {
+                const indexSorted: IndexSorted = {
+                    type: "sorted",
+                    source,
+                    order: "asc",
+                };
+
+                for (var i = 0; i < opts.length; i++) {
+                    const maybeKey = opts[i].keyMatch;
+                    const maybeOrder = opts[i].orderMatch;
+                    if (maybeKey) {
+                        indexSorted.key = opts[i].keyMatch;
+                    }
+
+                    if (maybeOrder) {
+                        indexSorted.order = maybeOrder;
+                    }
+                }
+
+                return indexSorted;
+            }
+        ),
     queryExists: (_) =>
         createFunction(P.regexp(/exists/i).desc("exists"), PRIMITIVES.identifier.or(PRIMITIVES.string)).map(
             ([_func, ident]) => ({
@@ -594,6 +633,7 @@ export const QUERY = P.createLanguage<QueryLanguage>({
             q.queryChildOf,
             q.queryParentOf,
             q.queryLinked,
+            q.querySorted,
             q.queryPath,
             q.queryQuotedExpression,
             // Expressions are essentially the "catch-all" of otherwise unparseable terms, so they should go absolute last.

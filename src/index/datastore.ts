@@ -15,6 +15,7 @@ import { Result } from "api/result";
 import { Evaluator } from "expression/evaluator";
 import { Settings } from "settings";
 import path from "path-browserify";
+import BTree from "sorted-btree";
 
 /** Central, index storage for datacore values. */
 export class Datastore {
@@ -104,6 +105,7 @@ export class Datastore {
         // Optimize over $completed and $status lookups for tasks.
         fields.set("$completed", new BTreeFieldIndex());
         fields.set("$status", new BTreeFieldIndex());
+        fields.set("$atime", new BTreeFieldIndex());
 
         return fields;
     }
@@ -472,6 +474,23 @@ export class Datastore {
                 if (!query.inclusive)
                     return Result.success(Filters.atom(Filters.setIntersectNegation(results, resolvedSources)));
                 else return Result.success(Filters.atom(results));
+            case "sorted":
+                const maybeInner = this._search(query.source, settings);
+                if (!maybeInner.successful) return maybeInner.cast();
+                const innerQuery = maybeInner.value;
+
+                const sortedOnKey = this._sortedByField((query.key ?? "$id").toLowerCase(), query.order);
+
+                if (Filters.empty(innerQuery)) return Result.success(Filters.NOTHING);
+
+                return Result.success(
+                    Filters.atom(
+                        Filters.setIntersectNegation(
+                            Filters.resolve(sortedOnKey, Filters.EMPTY_SET),
+                            Filters.resolve(Filters.negate(innerQuery), this.ids)
+                        )
+                    )
+                );
             default:
                 return Result.success(this._resolvePrimitive(query, settings));
         }
@@ -566,6 +585,32 @@ export class Datastore {
         }
 
         return Filters.atom(matches);
+    }
+
+    /** Filter documents by field values, using the fast lookup if it returns a result and otherwise filtering over every document using the slow predicate. */
+    private _sortedByField(key: string, order: "asc" | "desc"): Filter<string> {
+        const normkey = key.toLowerCase();
+        const index = this.fields.get(normkey);
+        if (index == null) return Filters.NOTHING;
+
+        const fastlookup = order === "asc" ? index.ascending() : index.descending();
+        if (fastlookup != null) return Filters.atom(fastlookup);
+
+        // Compute by iterating over each field.
+        const sorted = new BTree([], (left, right) =>
+            order === "asc" ? Literals.compare(left, right) : Literals.compare(right, left)
+        );
+        for (const objectId of index.all()) {
+            const object = this.objects.get(objectId);
+            if (!object || !object.$types.contains(FIELDBEARING_TYPE)) continue;
+
+            const field = (object as any as Fieldbearing).field(normkey);
+            if (!field) continue;
+
+            sorted.set(field.value, objectId);
+        }
+
+        return Filters.atom(new Set([...sorted.values()]));
     }
 
     /**

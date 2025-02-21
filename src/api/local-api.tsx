@@ -185,7 +185,11 @@ export class DatacoreLocalApi {
     /** Get the list of opened files. Defaults the 10 most recent files. Can be overridden by setting `settings.limit` to
      * the desired amount.
      */
-    public useLastOpenedFiles(settings?: { limit?: number; debounce?: number }): Indexable[] {
+    public useLastOpenedFiles(settings?: {
+        limit?: number;
+        filter?: (file: Indexable) => boolean;
+        debounce?: number;
+    }): Indexable[] {
         return useLastOpenedFiles(this.core, settings);
     }
 
